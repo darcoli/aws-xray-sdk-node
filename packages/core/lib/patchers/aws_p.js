@@ -23,19 +23,21 @@ var throttledErrorDefault = function throttledErrorDefault() {
  * All created clients will automatically be captured.  See 'captureAWSClient'
  * for additional details.
  * @param {AWS} awssdk - The Javascript AWS SDK.
+ * @param {defaultAnnotations} object - Optional key-value object with default annotations.
+ * @param {defaultMetadata} object - Optional key-value object with default metadata.
  * @alias module:aws_p.captureAWS
  * @returns {AWS}
  * @see https://github.com/aws/aws-sdk-js
  */
 
-var captureAWS = function captureAWS(awssdk) {
+var captureAWS = function captureAWS(awssdk, defaultAnnotations = {}, defaultMetadata = {}) {
   if (!semver.gte(awssdk.VERSION, minVersion))
     throw new Error ('AWS SDK version ' + minVersion + ' or greater required.');
 
   for (var prop in awssdk) {
     if (awssdk[prop].serviceIdentifier) {
       var Service = awssdk[prop];
-      Service.prototype.customizeRequests(captureAWSRequest);
+      Service.prototype.customizeRequests(getCaptureAWSRequest(defaultAnnotations, defaultMetadata));
     }
   }
 
@@ -47,17 +49,32 @@ var captureAWS = function captureAWS(awssdk) {
  * For manual mode, a param with key called 'Segment' is required as a part of the AWS
  * call paramaters, and must reference a Segment or Subsegment object.
  * @param {AWS.Service} service - An instance of a AWS service to wrap.
+ * @param {defaultAnnotations} object - Optional key-value object with default annotations.
+ * @param {defaultMetadata} object - Optional key-value object with default metadata.
  * @alias module:aws_p.captureAWSClient
  * @returns {AWS.Service}
  * @see https://github.com/aws/aws-sdk-js
  */
 
-var captureAWSClient = function captureAWSClient(service) {
-  service.customizeRequests(captureAWSRequest);
+var captureAWSClient = function captureAWSClient(service, defaultAnnotations = {}, defaultMetadata = {}) {
+  service.customizeRequests(getCaptureAWSRequest(defaultAnnotations, defaultMetadata));
   return service;
 };
 
-function captureAWSRequest(req) {
+/** 
+ * Returns a partial patcher function with annotations and metadata bound but which
+ * binds "this" at invocation time.
+ * @param {defaultAnnotations} object - Optional key-value object with default annotations.
+ * @param {defaultMetadata} object - Optional key-value object with default metadata.
+ * @returns {function captureAWSRequest(req)}
+ */
+function getCaptureAWSRequest(annotations = {}, metadata = {}) {
+  return function(req) {
+    captureAWSRequest.call(this, annotations, metadata, req);
+  }
+}
+
+function captureAWSRequest(annotations, metadata, req) {
   // short-circuit if the client is the sampling poller
   if (req.service === ServiceConnector.client) {
     return req;
@@ -83,6 +100,10 @@ function captureAWSRequest(req) {
   var stack = (new Error()).stack;
   var subsegment = parent.addNewSubsegment(this.serviceIdentifier);
   var traceId = parent.segment ? parent.segment.trace_id : parent.trace_id;
+
+  // Adding default annotations and metadata
+  Object.keys(annotations).map(key => subsegment.addAnnotation(key, annotations[key]));
+  Object.keys(metadata).map(key => subsegment.addMetadata(key, metadata[key]));
 
   req.on('build', function(req) {
     req.httpRequest.headers['X-Amzn-Trace-Id'] = 'Root=' + traceId + ';Parent=' + subsegment.id +
